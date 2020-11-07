@@ -72,7 +72,12 @@ class ParallelCoroutineGroup(object):
                     finished.append(coroutine)
             for coroutine in finished:
                 self._coroutines.remove(coroutine)
-            yield
+            try:
+                yield
+            except BaseException:
+                for coroutine in self._coroutines:
+                    coroutine.close()
+                raise
 
 
 class LimitingExecutorQueue(object):
