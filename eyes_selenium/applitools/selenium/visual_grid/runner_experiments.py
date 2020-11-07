@@ -129,8 +129,8 @@ class SessionService(ThreadPoolExecutor):
 
 
 class RenderingService(ThreadPoolExecutor):
-    def __init__(self):
-        super(RenderingService, self).__init__(10, self.__class__.__name__)
+    def __init__(self, parallelism):
+        super(RenderingService, self).__init__(parallelism, self.__class__.__name__)
 
     def render(self, dom):
         def do_render():
@@ -144,8 +144,8 @@ class RenderingService(ThreadPoolExecutor):
 
 
 class CheckService(ThreadPoolExecutor):
-    def __init__(self):
-        super(CheckService, self).__init__(10, self.__class__.__name__)
+    def __init__(self, parallelism):
+        super(CheckService, self).__init__(parallelism, self.__class__.__name__)
 
     def check(self, render_result):
         def do_check():
@@ -159,8 +159,8 @@ class CheckService(ThreadPoolExecutor):
 
 
 class CollectionService(ThreadPoolExecutor):
-    def __init__(self):
-        super(CollectionService, self).__init__(10, self.__class__.__name__)
+    def __init__(self, parallelism):
+        super(CollectionService, self).__init__(parallelism, self.__class__.__name__)
 
     def collect_resources(self, dom):
         def do_collect():
@@ -338,9 +338,9 @@ class VGRunner(object):
 
 
 session_service = SessionService(2)
-resource_collection_service = CollectionService()
-rendering_service = RenderingService()
-check_service = CheckService()
+resource_collection_service = CollectionService(10)
+rendering_service = RenderingService(10)
+check_service = CheckService(10)
 runner = VGRunner()
 
 try:
