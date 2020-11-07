@@ -282,28 +282,36 @@ class VGTest:
 class VGRunner(object):
     def __init__(self):
         self.results = []
-        self._tests_queue = deque()
+        self._sessions_queue = deque()
+        self._last_session = None
         self._canceled = False
         self._thread = Thread(target=self._run, name=self.__class__.__name__)
 
-    def add_test(self, name, browsers):
-        t = VGTestSession(name, browsers, self.results)
-        self._tests_queue.append(t)
-        return t
+    def add_session(self, name, browsers):
+        if self._last_session:
+            self._last_session.close()
+        self._last_session = VGTestSession(name, browsers, self.results)
+        self._sessions_queue.append(self._last_session)
+        return self._last_session
 
     def wait(self):
         if self._thread.is_alive():
-            self._tests_queue.append(END)
+            self.close()
             self._thread.join()
 
+    def close(self):
+        if self._last_session:
+            self._last_session.close()
+        self._sessions_queue.append(END)
+
     def cancel(self):
+        self._canceled = True
         if self._thread.is_alive():
-            self._canceled = True
             self._thread.join()
 
     def _run(self):
         tests = []
-        for test in pop_deque_until(self._tests_queue, END):
+        for test in pop_deque_until(self._sessions_queue, END):
             if self._canceled:
                 break
             if test:
@@ -311,7 +319,7 @@ class VGRunner(object):
             else:
                 sleep(0.5)
             for _ in parallel_coroutines(tests):
-                if self._canceled or self._tests_queue:
+                if self._canceled or self._sessions_queue:
                     break
                 sleep(0.5)
         for _ in parallel_coroutines(tests):
@@ -337,32 +345,28 @@ runner = VGRunner()
 
 try:
     with resource_collection_service, rendering_service, check_service, runner:
-        test = runner.add_test("a", ["chrome", "safari"])
+        test = runner.add_session("a", ["chrome", "safari"])
         sleep(0.5)
         test.add_check("a_1")
         sleep(0.5)
         test.add_check("a_2")
-        test.close()
 
-        test = runner.add_test("b", ["chrome", "firefox"])
+        test = runner.add_session("b", ["chrome", "firefox"])
         sleep(0.5)
         test.add_check("b_1")
         sleep(0.5)
         test.add_check("b_2")
-        test.close()
 
-        test = runner.add_test("c", ["chrome"])
+        test = runner.add_session("c", ["chrome"])
         sleep(0.5)
         test.add_check("c_1")
         sleep(0.5)
         test.add_check("c_2")
         sleep(0.5)
         test.add_check("c_3")
-        test.close()
 
-        test = runner.add_test("d", ["chrome", "firefox"])
-        test.add_check("check_d_1")
-        test.close()
+        test = runner.add_session("d", ["chrome", "firefox"])
+        test.add_check("d_1")
 
         log("All defined")
         runner.wait()
