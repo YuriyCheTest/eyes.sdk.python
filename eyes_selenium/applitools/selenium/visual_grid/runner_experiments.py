@@ -17,18 +17,6 @@ def log(template, *args):
     print("{:>20} {:5.2f} {}\n".format(name, time() - start, msg), end="")
 
 
-def pop_deque_until(deque, sentinel):
-    while True:
-        if deque:
-            item = deque.popleft()
-            if item is sentinel:
-                break
-            else:
-                yield item
-        else:
-            yield None
-
-
 @contextmanager
 def auto_cancel(future):
     try:
@@ -38,30 +26,85 @@ def auto_cancel(future):
         raise
 
 
+def pipe_coroutine(input_queue, coro_func, *output_queues, forward_end=True):
+    while True:
+        if not input_queue:
+            yield
+        else:
+            item = input_queue.popleft()
+            if coro_func is None or item is END and forward_end:
+                for output_queue in output_queues:
+                    output_queue.append(item)
+            if item is END:
+                break
+            if coro_func is not None:
+                coroutine = coro_func(item)
+                for res in coroutine:
+                    if res is not None:
+                        for output_queue in output_queues:
+                            output_queue.append(res)
+                    else:
+                        try:
+                            yield
+                        except BaseException:
+                            coroutine.close()
+                            raise
+
+
+def queue_for_each(input_queue, coro_proc, end_coro_proc):
+    while True:
+        if not input_queue:
+            yield
+        else:
+            item = input_queue.popleft()
+            if item is END:
+                if end_coro_proc:
+                    for _ in end_coro_proc:
+                        try:
+                            yield
+                        except BaseException:
+                            end_coro_proc.close()
+                            raise
+                break
+            if coro_proc is not None:
+                coroutine = coro_proc(item)
+                for _ in coroutine:
+                    try:
+                        yield
+                    except BaseException:
+                        coroutine.close()
+                        raise
+
+
 class ParallelCoroutineGroup(object):
     def __init__(self, *coroutines, complete=True):
-        self._added = None if complete else deque()
         self._coroutines = [iter(c) for c in coroutines]
+        self._complete = complete
+        self._added = None if complete else deque()
 
     def add(self, *coroutines):
-        if self._added is not None:
+        if self._complete:
+            raise RuntimeError("Can't add to completed ParallelCoroutines")
+        else:
             for coroutine in coroutines:
                 self._added.append(iter(coroutine))
-        else:
-            raise RuntimeError("Can't add to completed ParallelCoroutines")
 
     def complete(self):
-        if self._added is not None:
-            self._added.append(END)
-        else:
+        if self._complete:
             raise RuntimeError("Already completed")
+        else:
+            self._added.append(END)
+
+    @property
+    def finished(self):
+        return self._complete and not self._coroutines
 
     def coroutine(self):
-        while self._coroutines or self._added is not None:
+        while not self.finished:
             while self._added:
                 added = self._added.popleft()
                 if added is END:
-                    self._added = None
+                    self._complete = True
                 else:
                     self._coroutines.append(added)
             finished = []
@@ -214,11 +257,26 @@ class CollectionService(ThreadPoolExecutor):
 class VGTestSession:
     def __init__(self, name, browsers_list, results):
         self._name = name
-        self._browsers_list = browsers_list
         self._session = None
         self._checks_queue = deque()
         self._collected_resources = deque()
-        self._results = results
+        self.tests = [VGTest(b, results) for b in browsers_list]
+        self._resource_collection_group = ParallelCoroutineGroup(complete=False)
+        self._subtasks = ParallelCoroutineGroup(
+            self._establish_connection(),
+            queue_for_each(
+                self._checks_queue,
+                self._start_collect_resources_task,
+                end_coro_proc=self._complete_collect_resources_group(),
+            ),
+            pipe_coroutine(
+                self._collected_resources,
+                None,
+                *(t.collected_resources for t in self.tests)
+            ),
+            self._resource_collection_group.coroutine(),
+            complete=False,
+        )
 
     def add_check(self, check):
         log("Check {} defined", check)
@@ -229,30 +287,32 @@ class VGTestSession:
         self._checks_queue.append(END)
 
     def coroutine(self):
-        subtasks = ParallelCoroutineGroup(
-            self._collect_resources_parallel(),
-            self._establish_connection(),
-            complete=False,
-        )
-        coroutine = subtasks.coroutine()
+        coroutine = self._subtasks.coroutine()
         for _ in coroutine:
             if self._session:
                 break
             else:
                 yield
 
-        tests = [VGTest(b, self._results) for b in self._browsers_list]
-        subtasks.add(*(test.coroutine() for test in tests))
-        subtasks.complete()
+        self._subtasks.add(*(test.coroutine() for test in self.tests))
+        self._subtasks.complete()
         for _ in coroutine:
-            if self._collected_resources:
-                collected_dom = self._collected_resources.popleft()
-                for t in tests:
-                    t.add_check(collected_dom)
-            else:
-                yield
+            if self._resource_collection_group.finished:
+                self._collected_resources.append(END)
+                break
+            yield
+        for _ in coroutine:
+            yield
 
         session_service.close_session(self._session)
+
+    def _start_collect_resources_task(self, dom):
+        self._resource_collection_group.add(self._collect_resources(dom))
+        yield
+
+    def _complete_collect_resources_group(self):
+        self._resource_collection_group.complete()
+        yield
 
     def _establish_connection(self):
         session_future = session_service.open_session(self._name)
@@ -260,20 +320,6 @@ class VGTestSession:
             while not session_future.done():
                 yield
             self._session = session_future.result()
-
-    def _collect_resources_parallel(self):
-        subtasks = ParallelCoroutineGroup(complete=False)
-        coroutine = subtasks.coroutine()
-        for _ in coroutine:
-            if self._checks_queue:
-                dom = self._checks_queue.popleft()
-                if dom is END:
-                    subtasks.complete()
-                else:
-                    subtasks.add(self._collect_resources(dom))
-            else:
-                yield
-        self._collected_resources.append(END)
 
     def _collect_resources(self, dom):
         collected_future = resource_collection_service.collect_resources(dom)
@@ -286,40 +332,30 @@ class VGTestSession:
 class VGTest:
     def __init__(self, browser_info, results):
         self._browser_info = browser_info
-        self._render_requests = deque()
-        self._render_results_queue = deque()
-        self._results = results
+        self.collected_resources = deque()
+        render_results = deque()
+        self._coroutines = ParallelCoroutineGroup(
+            pipe_coroutine(self.collected_resources, self._render, render_results),
+            pipe_coroutine(render_results, self._check, results, forward_end=False),
+        )
 
     def coroutine(self):
-        return ParallelCoroutineGroup(self._render(), self._check()).coroutine()
+        return self._coroutines.coroutine()
 
-    def add_check(self, dom_with_resources):
-        self._render_requests.append(dom_with_resources)
-
-    def _render(self):
-        for dom in pop_deque_until(self._render_requests, END):
-            if dom:
-                render_future = rendering_service.render(
-                    "{} in {}".format(dom, self._browser_info)
-                )
-                with auto_cancel(render_future):
-                    while not render_future.done():
-                        yield
-                    self._render_results_queue.append(render_future.result())
-            else:
+    def _render(self, dom_with_resourcs):
+        render_request = "{} in {}".format(dom_with_resourcs, self._browser_info)
+        render_future = rendering_service.render(render_request)
+        with auto_cancel(render_future):
+            while not render_future.done():
                 yield
-        self._render_results_queue.append(END)
+            yield render_future.result()
 
-    def _check(self):
-        for render in pop_deque_until(self._render_results_queue, END):
-            if render:
-                check_future = check_service.check(render)
-                with auto_cancel(check_future):
-                    while not check_future.done():
-                        yield
-                    self._results.append(check_future.result())
-            else:
+    def _check(self, render_result):
+        check_future = check_service.check(render_result)
+        with auto_cancel(check_future):
+            while not check_future.done():
                 yield
+            yield check_future.result()
 
 
 class VGRunner(object):
