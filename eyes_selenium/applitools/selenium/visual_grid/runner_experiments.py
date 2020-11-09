@@ -165,7 +165,7 @@ class SessionService(ThreadPoolExecutor):
             log("Opening session: {}", name)
             sleep(2)
             log("Session opened: {}", name)
-            return "session " + name
+            return SessionService.Session(name, self)
 
         log("Scheduling session open {}", name)
         return self.submit(do_open)
@@ -179,6 +179,20 @@ class SessionService(ThreadPoolExecutor):
 
         log("Scheduling session close {}", session)
         return self.submit(do_close)
+
+    class Session(object):
+        def __init__(self, name, session_service):
+            self.name = name
+            self._sesson_service = session_service
+
+        def __str__(self):
+            return "Session " + self.name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self._sesson_service.close_session(self.name)
 
 
 class RenderingService(ThreadPoolExecutor):
@@ -261,11 +275,11 @@ class VGTestSession:
                 break
             else:
                 yield
-        self._coroutines.add_queue.extend(test.coroutine() for test in self.tests)
-        self._coroutines.add_queue.append(END)
-        for _ in coroutine:
-            yield
-        session_service.close_session(self._session)
+        with self._session:
+            self._coroutines.add_queue.extend(test.coroutine() for test in self.tests)
+            self._coroutines.add_queue.append(END)
+            for _ in coroutine:
+                yield
 
     def _establish_connection(self):
         session_future = session_service.open_session(self._name)
