@@ -100,27 +100,27 @@ class ParallelCoroutineGroup(object):
         return self._complete and not self._coroutines
 
     def coroutine(self):
-        while not self.finished:
-            while self._added:
-                added = self._added.popleft()
-                if added is END:
-                    self._complete = True
-                else:
-                    self._coroutines.append(added)
-            finished = []
-            for coroutine in self._coroutines:
-                try:
-                    next(coroutine)
-                except StopIteration:
-                    finished.append(coroutine)
-            for coroutine in finished:
-                self._coroutines.remove(coroutine)
-            try:
-                yield
-            except BaseException:
+        try:
+            while not self.finished:
+                while self._added:
+                    added = self._added.popleft()
+                    if added is END:
+                        self._complete = True
+                    else:
+                        self._coroutines.append(added)
+                finished = []
                 for coroutine in self._coroutines:
-                    coroutine.close()
-                raise
+                    try:
+                        next(coroutine)
+                    except StopIteration:
+                        finished.append(coroutine)
+                for coroutine in finished:
+                    self._coroutines.remove(coroutine)
+                yield
+        except BaseException:
+            for coroutine in self._coroutines:
+                coroutine.close()
+            raise
 
 
 class LimitingExecutorQueue(object):
