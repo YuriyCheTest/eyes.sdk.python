@@ -26,23 +26,21 @@ def auto_cancel(future):
         raise
 
 
-def pipe_coroutine(input_queue, coro_func, *output_queues, forward_end=True):
+def pipe_coroutine(input_queue, coro_func, output_queue, forward_end=True):
     while True:
         if not input_queue:
             yield
         else:
             item = input_queue.popleft()
             if coro_func is None or item is END and forward_end:
-                for output_queue in output_queues:
-                    output_queue.append(item)
+                output_queue.append(item)
             if item is END:
                 break
             if coro_func is not None:
                 with closing(coro_func(item)) as coroutine:
                     for res in coroutine:
                         if res is not None:
-                            for output_queue in output_queues:
-                                output_queue.append(res)
+                            output_queue.append(res)
                         else:
                             yield
 
