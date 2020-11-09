@@ -3,7 +3,7 @@ from __future__ import print_function
 import queue
 from collections import deque
 from concurrent.futures.thread import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from threading import Condition, Thread, current_thread
 from time import sleep, time
 
@@ -38,62 +38,28 @@ def pipe_coroutine(input_queue, coro_func, *output_queues, forward_end=True):
             if item is END:
                 break
             if coro_func is not None:
-                coroutine = coro_func(item)
-                for res in coroutine:
-                    if res is not None:
-                        for output_queue in output_queues:
-                            output_queue.append(res)
-                    else:
-                        try:
+                with closing(coro_func(item)) as coroutine:
+                    for res in coroutine:
+                        if res is not None:
+                            for output_queue in output_queues:
+                                output_queue.append(res)
+                        else:
                             yield
-                        except BaseException:
-                            coroutine.close()
-                            raise
-
-
-def queue_for_each(input_queue, coro_proc, end_coro_proc):
-    while True:
-        if not input_queue:
-            yield
-        else:
-            item = input_queue.popleft()
-            if item is END:
-                if end_coro_proc:
-                    for _ in end_coro_proc:
-                        try:
-                            yield
-                        except BaseException:
-                            end_coro_proc.close()
-                            raise
-                break
-            if coro_proc is not None:
-                coroutine = coro_proc(item)
-                for _ in coroutine:
-                    try:
-                        yield
-                    except BaseException:
-                        coroutine.close()
-                        raise
 
 
 class ParallelCoroutineGroup(object):
-    def __init__(self, *coroutines, complete=True):
-        self._coroutines = [iter(c) for c in coroutines]
-        self._complete = complete
-        self._added = None if complete else deque()
+    def __init__(self, add_queue=None, at_end=None):
+        self.add_queue = deque() if add_queue is None else add_queue
+        self._at_end = at_end
+        self._complete = False
+        self._coroutines = []
 
-    def add(self, *coroutines):
-        if self._complete:
-            raise RuntimeError("Can't add to completed ParallelCoroutines")
-        else:
-            for coroutine in coroutines:
-                self._added.append(iter(coroutine))
-
-    def complete(self):
-        if self._complete:
-            raise RuntimeError("Already completed")
-        else:
-            self._added.append(END)
+    @classmethod
+    def static(cls, *coroutines, complete=True):
+        add_queue = deque(coroutines)
+        if complete:
+            add_queue.append(END)
+        return cls(add_queue)
 
     @property
     def finished(self):
@@ -102,16 +68,12 @@ class ParallelCoroutineGroup(object):
     def coroutine(self):
         try:
             while not self.finished:
-                while self._added:
-                    added = self._added.popleft()
-                    if added is END:
-                        self._complete = True
-                    else:
-                        self._coroutines.append(added)
+                self._load_added()
                 finished = []
                 for coroutine in self._coroutines:
                     try:
-                        next(coroutine)
+                        res = next(coroutine)
+                        assert res is None
                     except StopIteration:
                         finished.append(coroutine)
                 for coroutine in finished:
@@ -121,6 +83,16 @@ class ParallelCoroutineGroup(object):
             for coroutine in self._coroutines:
                 coroutine.close()
             raise
+        if self._at_end:
+            self._at_end()
+
+    def _load_added(self):
+        while self.add_queue:
+            added = self.add_queue.popleft()
+            if added is END:
+                self._complete = True
+            else:
+                self._coroutines.append(iter(added))
 
 
 class LimitingExecutorQueue(object):
@@ -257,24 +229,20 @@ class CollectionService(ThreadPoolExecutor):
 class VGTestSession:
     def __init__(self, name, browsers_list, results):
         self._name = name
+        self.tests = [VGTest(b, results) for b in browsers_list]
         self._session = None
         self._checks_queue = deque()
-        self._collected_resources = deque()
-        self.tests = [VGTest(b, results) for b in browsers_list]
-        self._resource_collection_group = ParallelCoroutineGroup(complete=False)
-        self._subtasks = ParallelCoroutineGroup(
+        resource_collection_group = ParallelCoroutineGroup(
+            at_end=self._send_resources_collected
+        )
+        self._coroutines = ParallelCoroutineGroup.static(
             self._establish_connection(),
-            queue_for_each(
-                self._checks_queue,
-                self._start_collect_resources_task,
-                end_coro_proc=self._complete_collect_resources_group(),
-            ),
+            resource_collection_group.coroutine(),
             pipe_coroutine(
-                self._collected_resources,
-                None,
-                *(t.collected_resources for t in self.tests)
+                self._checks_queue,
+                self._create_collect_resources_task,
+                resource_collection_group.add_queue,
             ),
-            self._resource_collection_group.coroutine(),
             complete=False,
         )
 
@@ -287,32 +255,17 @@ class VGTestSession:
         self._checks_queue.append(END)
 
     def coroutine(self):
-        coroutine = self._subtasks.coroutine()
+        coroutine = self._coroutines.coroutine()
         for _ in coroutine:
             if self._session:
                 break
             else:
                 yield
-
-        self._subtasks.add(*(test.coroutine() for test in self.tests))
-        self._subtasks.complete()
-        for _ in coroutine:
-            if self._resource_collection_group.finished:
-                self._collected_resources.append(END)
-                break
-            yield
+        self._coroutines.add_queue.extend(test.coroutine() for test in self.tests)
+        self._coroutines.add_queue.append(END)
         for _ in coroutine:
             yield
-
         session_service.close_session(self._session)
-
-    def _start_collect_resources_task(self, dom):
-        self._resource_collection_group.add(self._collect_resources(dom))
-        yield
-
-    def _complete_collect_resources_group(self):
-        self._resource_collection_group.complete()
-        yield
 
     def _establish_connection(self):
         session_future = session_service.open_session(self._name)
@@ -321,21 +274,30 @@ class VGTestSession:
                 yield
             self._session = session_future.result()
 
+    def _create_collect_resources_task(self, dom):
+        yield self._collect_resources(dom)
+
     def _collect_resources(self, dom):
         collected_future = resource_collection_service.collect_resources(dom)
         with auto_cancel(collected_future):
             while not collected_future.done():
                 yield
-            self._collected_resources.append(collected_future.result())
+            result = collected_future.result()
+            for test in self.tests:
+                test.input_queue.append(result)
+
+    def _send_resources_collected(self):
+        for test in self.tests:
+            test.input_queue.append(END)
 
 
 class VGTest:
     def __init__(self, browser_info, results):
         self._browser_info = browser_info
-        self.collected_resources = deque()
+        self.input_queue = deque()
         render_results = deque()
-        self._coroutines = ParallelCoroutineGroup(
-            pipe_coroutine(self.collected_resources, self._render, render_results),
+        self._coroutines = ParallelCoroutineGroup.static(
+            pipe_coroutine(self.input_queue, self._render, render_results),
             pipe_coroutine(render_results, self._check, results, forward_end=False),
         )
 
@@ -363,14 +325,14 @@ class VGRunner(object):
         self.sessions = []
         self.results = []
         self._thread = Thread(target=self._run, name=self.__class__.__name__)
-        self._coroutines = ParallelCoroutineGroup(complete=False)
+        self._coroutines = ParallelCoroutineGroup()
         self._canceled = False
 
     def add_session(self, name, browsers):
         if self.sessions:
             self.sessions[-1].complete()
         self.sessions.append(VGTestSession(name, browsers, self.results))
-        self._coroutines.add(self.sessions[-1].coroutine())
+        self._coroutines.add_queue.append(self.sessions[-1].coroutine())
         return self.sessions[-1]
 
     def wait(self):
@@ -381,7 +343,7 @@ class VGRunner(object):
     def complete(self):
         if self.sessions:
             self.sessions[-1].complete()
-        self._coroutines.complete()
+        self._coroutines.add_queue.append(END)
 
     def cancel(self):
         self._canceled = True
