@@ -249,7 +249,7 @@ class VGTestSession:
             at_end=self._send_resources_collected
         )
         self._coroutines = ParallelCoroutineGroup.static(
-            self._establish_connection(),
+            self._open_session(),
             resource_collection_group.coroutine(),
             pipe_coroutine(
                 self._checks_queue,
@@ -280,7 +280,7 @@ class VGTestSession:
             for _ in coroutine:
                 yield
 
-    def _establish_connection(self):
+    def _open_session(self):
         session_future = session_service.open_session(self._name)
         with auto_cancel(session_future):
             while not session_future.done():
