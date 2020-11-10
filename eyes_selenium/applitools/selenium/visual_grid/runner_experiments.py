@@ -53,7 +53,8 @@ class ParallelCoroutineGroup(object):
         self._coroutines = []
 
     @classmethod
-    def static(cls, *coroutines, complete=True):
+    def static(cls, *coroutines, **kwargs):
+        complete = kwargs.get("complete", True)
         add_queue = deque(coroutines)
         if complete:
             add_queue.append(END)
