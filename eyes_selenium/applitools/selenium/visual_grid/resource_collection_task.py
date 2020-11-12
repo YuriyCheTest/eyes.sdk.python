@@ -35,11 +35,7 @@ if typing.TYPE_CHECKING:
 
     from applitools.common import Region, RenderingInfo
     from applitools.core import ServerConnector
-    from applitools.selenium.visual_grid import (
-        EyesConnector,
-        ResourceCache,
-        RunningTest,
-    )
+    from applitools.selenium.visual_grid import ResourceCache, RunningTest
 
 
 @attr.s(hash=True)
@@ -76,7 +72,9 @@ class ResourceCollectionTask(VGTask):
     def prepare_data_for_rg(self, data):
         # type: (Dict) -> List[RenderRequest]
         full_request_resources = {}
-        dom = parse_frame_dom_resources(data, full_request_resources)
+        dom = parse_frame_dom_resources(
+            data, self.server_connector, self.resource_cache, full_request_resources
+        )
         render_requests = self.prepare_rg_requests(dom, full_request_resources)
         logger.debug(
             "exit - returning render_request array of length: {}".format(
@@ -93,6 +91,7 @@ class ResourceCollectionTask(VGTask):
     def check_resources_status_and_upload(
         self, dom, resource_map, full_request_resources
     ):
+        assert resource_map is full_request_resources
         cached_request_resources = full_request_resources.copy()
 
         def get_and_put_resource(url):
