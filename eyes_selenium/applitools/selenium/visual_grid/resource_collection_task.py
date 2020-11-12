@@ -83,51 +83,15 @@ class ResourceCollectionTask(VGTask):
         )
         render_request = list(render_requests.values())[0]
         logger.debug("Uploading missing resources")
-        self.check_resources_status_and_upload(
-            render_request.dom, render_request.resources, full_request_resources
+        check_resources_status_and_upload(
+            render_request.dom,
+            render_request.resources,
+            full_request_resources,
+            self.server_connector,
+            self.put_cache,
+            self.is_force_put_needed,
         )
         return render_requests
-
-    def check_resources_status_and_upload(
-        self, dom, resource_map, full_request_resources
-    ):
-        assert resource_map is full_request_resources
-        cached_request_resources = full_request_resources.copy()
-
-        def get_and_put_resource(url):
-            # type: (str) -> VGResource
-            logger.debug("get_and_put_resource({}) call".format(url))
-            resource = cached_request_resources.get(url)
-            self.server_connector.render_put_resource("NONE", resource)
-            return resource
-
-        hash_to_resource_url = {}
-        for url, resource in iteritems(resource_map):
-            if url in self.put_cache:
-                continue
-            hash_to_resource_url[resource.hash] = url
-
-        if dom.url not in self.put_cache:
-            hash_to_resource_url[dom.resource.hash] = dom.url
-            cached_request_resources[dom.url] = dom.resource
-
-        resources_hashes = []
-        for resource_url in hash_to_resource_url.values():
-            resource = cached_request_resources[resource_url]
-            if resource.error_status_code:
-                continue
-            resources_hashes.append(
-                {"hashFormat": resource.hash_format, "hash": resource.hash}
-            )
-        result = self.server_connector.check_resource_status(None, *resources_hashes)
-
-        for hash_obj, exists in zip(resources_hashes, result):
-            if exists or not self.is_force_put_needed:
-                continue
-            hash_ = hash_obj["hash"]
-            resource_url = hash_to_resource_url[hash_]
-            self.put_cache.fetch_and_store(resource_url, get_and_put_resource)
-        self.put_cache.process_all()
 
     def prepare_rg_requests(self, dom, request_resources):
         # type: (RGridDom, Dict) -> Dict[RunningTest,RenderRequest]
@@ -237,6 +201,53 @@ def parse_frame_dom_resources(
     return RGridDom(
         url=base_url, dom_nodes=data["cdt"], resources=frame_request_resources
     )
+
+
+def check_resources_status_and_upload(
+    dom,
+    resource_map,
+    full_request_resources,
+    server_connector,
+    put_cache,
+    is_force_put_needed,
+):
+    assert resource_map is full_request_resources
+    cached_request_resources = full_request_resources.copy()
+
+    def get_and_put_resource(url):
+        # type: (str) -> VGResource
+        logger.debug("get_and_put_resource({}) call".format(url))
+        resource = cached_request_resources.get(url)
+        server_connector.render_put_resource("NONE", resource)
+        return resource
+
+    hash_to_resource_url = {}
+    for url, resource in iteritems(resource_map):
+        if url in put_cache:
+            continue
+        hash_to_resource_url[resource.hash] = url
+
+    if dom.url not in put_cache:
+        hash_to_resource_url[dom.resource.hash] = dom.url
+        cached_request_resources[dom.url] = dom.resource
+
+    resources_hashes = []
+    for resource_url in hash_to_resource_url.values():
+        resource = cached_request_resources[resource_url]
+        if resource.error_status_code:
+            continue
+        resources_hashes.append(
+            {"hashFormat": resource.hash_format, "hash": resource.hash}
+        )
+    result = server_connector.check_resource_status(None, *resources_hashes)
+
+    for hash_obj, exists in zip(resources_hashes, result):
+        if exists or not is_force_put_needed:
+            continue
+        hash_ = hash_obj["hash"]
+        resource_url = hash_to_resource_url[hash_]
+        put_cache.fetch_and_store(resource_url, get_and_put_resource)
+    put_cache.process_all()
 
 
 def fetch_resources_recursively(
