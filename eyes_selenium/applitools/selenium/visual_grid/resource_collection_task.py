@@ -71,25 +71,18 @@ class ResourceCollectionTask(VGTask):
 
     def prepare_data_for_rg(self, data):
         # type: (Dict) -> List[RenderRequest]
-        full_request_resources = {}
-        dom = parse_frame_dom_resources(
-            data, self.server_connector, self.resource_cache, full_request_resources
+        dom, full_request_resources = collect_and_upload_dom_resources(
+            data,
+            self.server_connector,
+            self.resource_cache,
+            self.put_cache,
+            self.is_force_put_needed,
         )
         render_requests = self.prepare_rg_requests(dom, full_request_resources)
         logger.debug(
             "exit - returning render_request array of length: {}".format(
                 len(render_requests)
             )
-        )
-        render_request = list(render_requests.values())[0]
-        logger.debug("Uploading missing resources")
-        check_resources_status_and_upload(
-            render_request.dom,
-            render_request.resources,
-            full_request_resources,
-            self.server_connector,
-            self.put_cache,
-            self.is_force_put_needed,
         )
         return render_requests
 
@@ -135,6 +128,20 @@ class ResourceCollectionTask(VGTask):
                 options=self.request_options,
             )
         return requests
+
+
+def collect_and_upload_dom_resources(
+    data, server_connector, resource_cache, put_cache, is_force_put_needed
+):
+    full_request_resources = {}
+    dom = parse_frame_dom_resources(
+        data, server_connector, resource_cache, full_request_resources
+    )
+    logger.debug("Uploading missing resources")
+    check_resources_status_and_upload(
+        dom, full_request_resources, server_connector, put_cache, is_force_put_needed
+    )
+    return dom, full_request_resources
 
 
 def parse_frame_dom_resources(
@@ -206,13 +213,11 @@ def parse_frame_dom_resources(
 def check_resources_status_and_upload(
     dom,
     resource_map,
-    full_request_resources,
     server_connector,
     put_cache,
     is_force_put_needed,
 ):
-    assert resource_map is full_request_resources
-    cached_request_resources = full_request_resources.copy()
+    cached_request_resources = resource_map.copy()
 
     def get_and_put_resource(url):
         # type: (str) -> VGResource
