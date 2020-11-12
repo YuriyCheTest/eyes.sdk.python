@@ -2,7 +2,6 @@ import itertools
 import typing
 import uuid
 from copy import deepcopy
-from collections import Generator
 
 import attr
 from selenium.common.exceptions import TimeoutException
@@ -25,13 +24,12 @@ from applitools.selenium.visual_grid import dom_snapshot_script
 
 from .eyes_connector import EyesConnector
 from .helpers import collect_test_results, wait_till_tests_completed
-from .render_task import RenderTask
 from .resource_collection_task import ResourceCollectionTask
 from .running_test import RunningTest
 from .visual_grid_runner import VisualGridRunner
 
 if typing.TYPE_CHECKING:
-    from typing import Dict, List, Optional, Text, Union
+    from typing import Dict, Generator, List, Optional, Text, Union
 
     from applitools.common.utils.custom_types import AnyWebElement
     from applitools.selenium import Configuration, Eyes, EyesWebDriver
