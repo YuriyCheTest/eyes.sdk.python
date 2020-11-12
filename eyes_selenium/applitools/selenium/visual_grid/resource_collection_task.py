@@ -179,7 +179,7 @@ def parse_frame_dom_resources(
     for f_data in frames:
         f_data["url"] = apply_base_url(f_data["url"], base_url)
         frame_request_resources[f_data["url"]] = parse_frame_dom_resources(
-            f_data
+            f_data, server_connector, resource_cache, full_request_resources
         ).resource
 
     urls_to_fetch = set(resource_urls)
