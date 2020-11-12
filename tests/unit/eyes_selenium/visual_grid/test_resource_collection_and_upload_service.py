@@ -1,5 +1,5 @@
 from applitools.selenium.visual_grid import ResourceCache
-from applitools.selenium.visual_grid.resource_collection_task import (
+from applitools.selenium.visual_grid.resource_collection_and_upload_service import (
     parse_frame_dom_resources,
 )
 from tests.unit.eyes_core.test_server_connector import MockResponse
