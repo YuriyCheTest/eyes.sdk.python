@@ -1,4 +1,7 @@
-from applitools.selenium.visual_grid import ResourceCache, ResourceCollectionTask
+from applitools.selenium.visual_grid import ResourceCache
+from applitools.selenium.visual_grid.resource_collection_task import (
+    parse_frame_dom_resources,
+)
 from tests.unit.eyes_core.test_server_connector import MockResponse
 
 
@@ -24,9 +27,8 @@ def test_cached_child_resources_get_into_render_request():
         "resourceUrls": ["https://a.com/1.css"],
     }
     cache = ResourceCache()
-    task = ResourceCollectionTask(None, None, cache, None, ConnectorMock, None)
+    vg_dom1 = parse_frame_dom_resources(capture_result, ConnectorMock, cache, {})
 
-    vg_dom1 = task.parse_frame_dom_resources(capture_result)
     assert set(vg_dom1.resources) == {
         "https://a.com/1.css",
         "https://a.com/2.css",
@@ -38,7 +40,7 @@ def test_cached_child_resources_get_into_render_request():
     assert "https://a.com/3.css" in cache
     assert "https://a.com/4.css" in cache
 
-    vg_dom2 = task.parse_frame_dom_resources(capture_result)
+    vg_dom2 = parse_frame_dom_resources(capture_result, ConnectorMock, cache, {})
     assert set(vg_dom2.resources) == {
         "https://a.com/1.css",
         "https://a.com/2.css",
@@ -70,9 +72,8 @@ def test_recursive_resources_downloaded_once():
         "resourceUrls": ["https://a.com/1.css"],
     }
     cache = ResourceCache()
-    task = ResourceCollectionTask(None, None, cache, None, ConnectorMock, None)
+    vg_dom1 = parse_frame_dom_resources(capture_result, ConnectorMock, cache, {})
 
-    vg_dom1 = task.parse_frame_dom_resources(capture_result)
     assert ConnectorMock.call_count == 2
     assert set(vg_dom1.resources) == {
         "https://a.com/1.css",

@@ -69,15 +69,15 @@ class ResourceCollectionTask(VGTask):
 
     def __attrs_post_init__(self):
         # type: () -> None
-        self.full_request_resources = {}  # type: Dict[Text, VGResource]
         self.func_to_run = lambda: self.prepare_data_for_rg(
             self.script
         )  # type: Callable
 
     def prepare_data_for_rg(self, data):
         # type: (Dict) -> List[RenderRequest]
-        dom = self.parse_frame_dom_resources(data)
-        render_requests = self.prepare_rg_requests(dom, self.full_request_resources)
+        full_request_resources = {}
+        dom = parse_frame_dom_resources(data, full_request_resources)
+        render_requests = self.prepare_rg_requests(dom, full_request_resources)
         logger.debug(
             "exit - returning render_request array of length: {}".format(
                 len(render_requests)
@@ -86,12 +86,14 @@ class ResourceCollectionTask(VGTask):
         render_request = list(render_requests.values())[0]
         logger.debug("Uploading missing resources")
         self.check_resources_status_and_upload(
-            render_request.dom, render_request.resources
+            render_request.dom, render_request.resources, full_request_resources
         )
         return render_requests
 
-    def check_resources_status_and_upload(self, dom, resource_map):
-        cached_request_resources = self.full_request_resources.copy()
+    def check_resources_status_and_upload(
+        self, dom, resource_map, full_request_resources
+    ):
+        cached_request_resources = full_request_resources.copy()
 
         def get_and_put_resource(url):
             # type: (str) -> VGResource
@@ -171,70 +173,71 @@ class ResourceCollectionTask(VGTask):
             )
         return requests
 
-    def parse_frame_dom_resources(self, data):  # noqa
-        # type: (Dict) -> RGridDom
-        base_url = data["url"]
-        resource_urls = data.get("resourceUrls", [])
-        all_blobs = data.get("blobs", [])
-        frames = data.get("frames", [])
+
+def parse_frame_dom_resources(
+    data, server_connector, resource_cache, full_request_resources
+):  # noqa
+    # type: (Dict) -> RGridDom
+    base_url = data["url"]
+    resource_urls = data.get("resourceUrls", [])
+    all_blobs = data.get("blobs", [])
+    frames = data.get("frames", [])
+    logger.debug(
+        """
+    parse_frame_dom_resources() call
+
+    base_url: {base_url}
+    count blobs: {blobs_num}
+    count resource urls: {resource_urls_num}
+    count frames: {frames_num}
+
+    """.format(
+            base_url=base_url,
+            blobs_num=len(all_blobs),
+            resource_urls_num=len(resource_urls),
+            frames_num=len(frames),
+        )
+    )
+
+    def find_child_resource_urls(content_type, content, resource_url):
+        # type: (Optional[Text], bytes, Text) -> NoReturn
         logger.debug(
-            """
-        parse_frame_dom_resources() call
-
-        base_url: {base_url}
-        count blobs: {blobs_num}
-        count resource urls: {resource_urls_num}
-        count frames: {frames_num}
-
-        """.format(
-                base_url=base_url,
-                blobs_num=len(all_blobs),
-                resource_urls_num=len(resource_urls),
-                frames_num=len(frames),
-            )
+            "find_child_resource_urls({0}, {1}) call".format(content_type, resource_url)
         )
+        if not content_type:
+            logger.debug("content_type is empty. Skip handling of resources")
+            return []
+        return [
+            apply_base_url(url, base_url, resource_url)
+            for url in collect_urls_from_(content_type, content)
+        ]
 
-        def find_child_resource_urls(content_type, content, resource_url):
-            # type: (Optional[Text], bytes, Text) -> NoReturn
-            logger.debug(
-                "find_child_resource_urls({0}, {1}) call".format(
-                    content_type, resource_url
-                )
-            )
-            if not content_type:
-                logger.debug("content_type is empty. Skip handling of resources")
-                return []
-            return [
-                apply_base_url(url, base_url, resource_url)
-                for url in collect_urls_from_(content_type, content)
-            ]
+    frame_request_resources = {}
+    for f_data in frames:
+        f_data["url"] = apply_base_url(f_data["url"], base_url)
+        frame_request_resources[f_data["url"]] = parse_frame_dom_resources(
+            f_data
+        ).resource
 
-        frame_request_resources = {}
-        for f_data in frames:
-            f_data["url"] = apply_base_url(f_data["url"], base_url)
-            frame_request_resources[f_data["url"]] = self.parse_frame_dom_resources(
-                f_data
-            ).resource
+    urls_to_fetch = set(resource_urls)
+    for blob in all_blobs:
+        resource = VGResource.from_blob(blob, find_child_resource_urls)
+        if resource.url.rstrip("#") == base_url:
+            continue
+        frame_request_resources[resource.url] = resource
+        urls_to_fetch |= set(resource.child_resource_urls)
 
-        urls_to_fetch = set(resource_urls)
-        for blob in all_blobs:
-            resource = VGResource.from_blob(blob, find_child_resource_urls)
-            if resource.url.rstrip("#") == base_url:
-                continue
-            frame_request_resources[resource.url] = resource
-            urls_to_fetch |= set(resource.child_resource_urls)
-
-        resources_and_their_children = fetch_resources_recursively(
-            urls_to_fetch,
-            self.server_connector,
-            self.resource_cache,
-            find_child_resource_urls,
-        )
-        frame_request_resources.update(resources_and_their_children)
-        self.full_request_resources.update(frame_request_resources)
-        return RGridDom(
-            url=base_url, dom_nodes=data["cdt"], resources=frame_request_resources
-        )
+    resources_and_their_children = fetch_resources_recursively(
+        urls_to_fetch,
+        server_connector,
+        resource_cache,
+        find_child_resource_urls,
+    )
+    frame_request_resources.update(resources_and_their_children)
+    full_request_resources.update(frame_request_resources)
+    return RGridDom(
+        url=base_url, dom_nodes=data["cdt"], resources=frame_request_resources
+    )
 
 
 def fetch_resources_recursively(
