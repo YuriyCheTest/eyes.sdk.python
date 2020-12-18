@@ -1,7 +1,7 @@
 [vNext]
 ### Updated
 - Updated concurrency model [Trello 2152](https://trello.com/c/yNzhBkBh)
-- DOM snapshot script to *4.4.1* [Trello 2370](https://trello.com/c/LtZ0SU2B) [Trello 2380](https://trello.com/c/yeMEtWhN)
+- DOM snapshot and DOM capture scripts to *4.4.1* and *9.0.0* [Trello 2370](https://trello.com/c/LtZ0SU2B) [Trello 2380](https://trello.com/c/yeMEtWhN)
 - Now sending screenshot location in match window data and setting correct scrolled element for dom capture [Trello 2379](https://trello.com/c/Wn9Fp4XN)
 
 ## [4.13.2] - 2020-12-04
