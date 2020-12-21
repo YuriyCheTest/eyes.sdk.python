@@ -32,7 +32,7 @@ Please check the applitools website for usage instructions:
 Development
 -----------
 
-For smother development experience install Invoke for task run first
+For smother development experience install Invoke for task run first.
 
 ::
 
